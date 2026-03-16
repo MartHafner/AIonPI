@@ -64,7 +64,7 @@ In the Imager under *Settings*, configure SSH, Wi-Fi and your username directly.
 
 ```bash
 # Connect via SSH
-ssh pi@<IP-address>
+ssh username@<IP-address>
 ```
 
 ### 2. Clone the project
