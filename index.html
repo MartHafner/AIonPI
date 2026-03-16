@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local AI</title>
+</head>
+<body>
+
+<div class="chat-wrapper">
+  <header>
+    <div class="dot"></div>
+    <h2>Local AI</h2>
+    <span class="model-badge">phi3 · ollama</span>
+  </header>
+
+  <div id="chat"></div>
+
+  <div class="input-bar">
+    <textarea id="prompt" placeholder="Nachricht eingeben …" rows="1"></textarea>
+    <button id="send" onclick="send()">
+      <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+  </div>
+</div>
+
+<script>
+  const chat = document.getElementById("chat");
+  const promptEl = document.getElementById("prompt");
+
+  // ── Markdown renderer (no dependencies) ──────────────────────────────────
+  function renderMarkdown(text) {
+    const parts = [];
+    const codeBlockRe = /```(\w*)\n?([\s\S]*?)```/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = codeBlockRe.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ type: "text", content: text.slice(lastIndex, match.index) });
+      }
+      parts.push({ type: "code", lang: match[1] || "plain", content: match[2] });
+      lastIndex = codeBlockRe.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      parts.push({ type: "text", content: text.slice(lastIndex) });
+    }
+
+    const wrapper = document.createDocumentFragment();
+
+    parts.forEach(part => {
+      if (part.type === "code") {
+        wrapper.appendChild(buildCodeBlock(part.lang, part.content));
+      } else {
+        const p = document.createElement("span");
+        p.style.whiteSpace = "pre-wrap";
+        p.innerHTML = escapeHtml(part.content)
+          .replace(/`([^`]+)`/g, "<code>$1</code>");
+        wrapper.appendChild(p);
+      }
+    });
+
+    return wrapper;
+  }
+
+  function buildCodeBlock(lang, code) {
+    const block = document.createElement("div");
+    block.className = "code-block";
+
+    const header = document.createElement("div");
+    header.className = "code-header";
+
+    const langLabel = document.createElement("span");
+    langLabel.className = "code-lang";
+    langLabel.textContent = lang || "plain";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "copy-btn";
+    copyBtn.innerHTML = `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Kopieren`;
+
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(code.trimEnd()).then(() => {
+        copyBtn.innerHTML = `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Kopiert!`;
+        copyBtn.classList.add("copied");
+        setTimeout(() => {
+          copyBtn.innerHTML = `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Kopieren`;
+          copyBtn.classList.remove("copied");
+        }, 2000);
+      });
+    });
+
+    header.appendChild(langLabel);
+    header.appendChild(copyBtn);
+
+    const pre = document.createElement("pre");
+    pre.textContent = code.trimEnd();
+
+    block.appendChild(header);
+    block.appendChild(pre);
+    return block;
+  }
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  // ── Message helpers ───────────────────────────────────────────────────────
+  function addMessage(role, text) {
+    const wrap = document.createElement("div");
+    wrap.className = "message " + role;
+
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = role === "user" ? "Du" : "AI";
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+
+    if (role === "ai") {
+      bubble.appendChild(renderMarkdown(text));
+    } else {
+      bubble.textContent = text;
+    }
+
+    wrap.appendChild(label);
+    wrap.appendChild(bubble);
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    return wrap;
+  }
+
+  function addThinking() {
+    const wrap = document.createElement("div");
+    wrap.className = "message ai thinking";
+    wrap.innerHTML = "<div class='label'>AI</div><div class='bubble'><span></span><span></span><span></span></div>";
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    return wrap;
+  }
+
+  // ── Gesprächsverlauf ─────────────────────────────────────────────────────
+  const history = [];
+
+  // ── Send ──────────────────────────────────────────────────────────────────
+  async function send() {
+  const prompt = promptEl.value.trim();
+  if (!prompt) return;
+
+  addMessage("user", prompt);
+  promptEl.value = "";
+  promptEl.style.height = "auto";
+
+  const thinking = addThinking();
+  
+  // Wir erstellen schon mal die AI-Sprechblase, die wir gleich füllen
+  const aiMsgWrap = addMessage("ai", "");
+  const aiBubble = aiMsgWrap.querySelector(".bubble");
+  aiBubble.textContent = ""; 
+
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, history })
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullReply = "";
+
+    thinking.remove();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const json = JSON.parse(line);
+          if (json.response) {
+            fullReply += json.response;
+            // Live-Update der Sprechblase
+            aiBubble.innerHTML = "";
+            aiBubble.appendChild(renderMarkdown(fullReply));
+            chat.scrollTop = chat.scrollHeight;
+          }
+        } catch (e) { console.error("JSON Error", e); }
+      }
+    }
+
+    history.push({ role: "user", content: prompt });
+    history.push({ role: "assistant", content: fullReply });
+    if (history.length > 20) history.splice(0, 2);
+
+  } catch (err) {
+    thinking.remove();
+    aiBubble.textContent = "Fehler: " + err.message;
+  }
+}
+</script>
+
+</body>
+</html>
